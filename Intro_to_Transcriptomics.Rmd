@@ -1,0 +1,214 @@
+---
+title: "Intro to Transcriptomics"
+author: Nicole Black, Wade Boohar, Kayla Xu
+date: 07/17/22
+updated: 09/26/23
+student name: Anton Wagner
+completed: 10/8/2023
+---
+
+***Deliverables***
+-Upload this R Notebook to your GitHub and submit the link to your Repo on BB.
+-Include any graphs or figures created in this assignment in the folder with your R notebook with descriptive file names.
+
+Since this is an optional partner activity, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In Transcriptomics_Tutorial.Rmd, you learned how to manipulate the SummarizedExperiment data structure, turn it into more readable dataframes, complete basic analysis using those dataframes, and performed a differential expression analysis based on age. Before saving the rna_counts, rna_clinical, and rna_genes however, we masked out any sample that was not a tumor. In this assignment, you will need to reinstantiate the rna_se object and then perform differential expression analysis based on tumor status.
+
+*Pre-Assignment*
+Use knitr function to set your working directory to your analysis_data folder in qbio_490_name.
+```{r setup}
+
+knitr::opts_knit$set(root.dir = normalizePath("C:/Users/Anton/Documents/QBIO490/qbio_490_antonwagner/analysis_data")) 
+
+```
+
+Load all necessary packages and instantiate the rna_se object
+```{r}
+
+
+
+if (!require("BiocManager", quietly = TRUE))
+ install.packages("BiocManager")
+BiocManager::install(version = "3.17")
+
+if (!require("DESeq2", quietly = TRUE))
+  BiocManager::install("DESeq2")
+
+if (!require("ggplot2", quietly = TRUE))
+  BiocManager::install("ggplot2")
+
+if (!require("EnhancedVolcano", quietly = TRUE))
+  BiocManager::install("EnhancedVolcano")
+
+library(BiocManager)
+
+library(DESeq2)
+
+library(ggplot2)
+
+library(EnhancedVolcano)
+
+
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+
+rna_query <- GDCquery(project ="TCGA-BRCA",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+
+#GDCdownload(rna_query)
+
+rna_se <- GDCprepare(rna_query)
+
+
+```
+
+
+*1*
+Perform all data cleaning and label manipulation steps (hint: applying colnames and rownames to make the dataframes more readable) except for masking out the patient with an NA for age and the "Solid Tissue Normal" sample types.
+```{r}
+
+#rownames(rna_se@colData)
+#colnames(rna_se@colData)
+
+
+rna_clinical <- rna_se@colData
+
+rna_clinical <- as.data.frame(rna_clinical)
+
+
+treatments_mask <- ifelse(colnames(rna_clinical) == 'treatments', F, T)
+rna_clinical <- rna_clinical[, treatments_mask]
+
+primary_mask <- ifelse(colnames(rna_clinical) == 'primary_site', F, T)
+rna_clinical <- rna_clinical[, primary_mask]
+
+disease_mask <- ifelse(colnames(rna_clinical) == 'disease_type', F, T)
+rna_clinical <- rna_clinical[, disease_mask]
+
+rna_genes <- rna_se@rowRanges@elementMetadata
+
+rna_genes <- as.data.frame(rna_genes)
+
+rna_counts <- rna_se@assays@data$unstranded
+rna_counts <- as.data.frame(rna_counts)
+
+rownames(rna_counts) <- rna_genes$gene_id
+colnames(rna_counts) <- rownames(rna_clinical)
+
+unique(rna_clinical$definition)
+
+
+rownames(rna_clinical)
+colnames(rna_clinical)
+
+```
+
+
+*2*
+
+Determine and define your experimental design for the differential expression analysis. Control for covariance of age, gender, OR vital_status. Manipulate those columns so that they are ready for differential expression analysis (hint: what kind of variables are they? what data type are they by default? do you need to handle unknown values?)
+
+Variable of interest: prior_malignancy (categorical) 
+Covariance: gender (categorical)
+I removed NA values and factored.
+I also filtered out rna_counts with under 10 expressions.
+
+```{r}
+
+gender_na_mask <- !is.na(rna_clinical$gender)
+
+rna_clinical <- rna_clinical[gender_na_mask,]
+
+rna_counts <- rna_counts[,gender_na_mask]
+
+
+prior_malignancy_na_mask <- !is.na(rna_clinical$prior_malignancy)
+
+rna_clinical <- rna_clinical[prior_malignancy_na_mask,]
+
+rna_counts <- rna_counts[,prior_malignancy_na_mask]
+
+
+rna_clinical$gender <- factor(rna_clinical$gender)
+rna_clinical$prior_malignancy <- factor(rna_clinical$prior_malignancy)
+
+
+# use rowSums() to create a list with the total number of counts of each gene
+row_sums <- rowSums(rna_counts)
+
+# create a boolean mask where genes with < 10 total counts are FALSE, and genes with >= 10 total counts are TRUE
+low_counts_mask <- ifelse(row_sums < 10, F, T)
+
+# rewrite the rna_counts df, subsetting for only genes with >= 10 total counts
+rna_counts <- rna_counts[low_counts_mask, ] 
+
+#update rna_genes with the low_counts_mask
+rna_genes <- rna_genes[low_counts_mask, ] 
+
+
+
+```
+
+
+*3*
+Perform the differential expression analysis, create a volcano plot, and interpret what genes from each of the 6 sections means (assuming thresholds of -log10padj = 2 and log2FoldChange = 1)
+```{r}
+
+?DESeqDataSetFromMatrix
+?DESeq
+
+
+dds <- DESeqDataSetFromMatrix(countData = rna_counts,
+                             colData = rna_clinical,
+                             design = ~gender + prior_malignancy)
+
+ dds_obj <- DESeq(dds)
+
+dds <- DESeq(dds, betaPrior=FALSE)
+
+res <- results(dds,
+               contrast = c('prior_malignancy','yes','no'))
+
+res <- lfcShrink(dds,
+                 contrast = c('prior_malignancy','yes','no'), res=res, type = 'normal')
+
+
+
+EnhancedVolcano(res,
+    lab = rna_genes$gene_name,
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    title = 'Prior Malignancy',
+    pCutoff = 10e-2,
+    FCcutoff = 1,
+    pointSize = 2,
+    labSize = 4.0,
+    col=c('gray', 'gray', 'blue', 'red3'),
+    colAlpha = 1)
+
+```
+
+top-right genes: RNU1-56P, RNU1-16P, RNVU1-27
+bottom-right genes: RNU1-133P
+top-left genes: CHGA, CKM
+bottom-left genes: PAGE1
+top-middle genes: CHGB, SNORA65
+bottom-middle genes: USH1C, SLC4A1
+
+
+Top right genes are significantly over-expressed genes in samples with prior malignancy while top left genes are under-expressed.
+Bottom genes fall below the designated p-threshold.
+
+RNU1 is a small nuclear RNA gene with various functional associations.
+CHGA is gene that encodes for neuroendocrine secretory proteins, found in neurons and endocrine cells.
+CKM encodes a cytoplasmic enzyme protein associated with energy homeostasis.
+
+
+Save the picture of the volcano plot (using either ggsave() or right clicking and manually downloading the image and push this .Rmd and the image to GitHub)
